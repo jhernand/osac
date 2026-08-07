@@ -16,10 +16,12 @@ metallb:
 cnv:
   enabled: true
 mce:
-  enabled: false
-
-# OSAC VMaaS (VM-as-a-Service) CI Environment Values
-# VMaaS CI values
+  enabled: true
+  osImages:
+    - openshiftVersion: "4.22"
+      version: "9.8.20260428-0"
+      url: "https://mirror.openshift.com/pub/openshift-v4/x86_64/dependencies/rhcos/4.22/4.22.0/rhcos-4.22.0-x86_64-live-iso.x86_64.iso"
+      cpuArchitecture: "x86_64"
 
 # --- Operator ---
 operator:
@@ -38,11 +40,12 @@ operator:
     serverAddress: "fulfillment-internal-api:8001"
     tokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token"
   controllers:
-    clusterOrder: false
+    clusterOrder: true
     computeInstance: true
     tenant: true
     networking: true
     storage: true
+    bareMetalInstance: true
   hubAccess:
     enabled: true
   tenants:
@@ -51,8 +54,8 @@ operator:
 
 # --- Fulfillment Service ---
 service:
-  externalHostname: ""  # Set to fulfillment-api-<namespace>.apps.<cluster>.<domain>
-  internalHostname: ""  # Set to fulfillment-internal-api-<namespace>.apps.<cluster>.<domain>
+  externalHostname: ""  # set dynamically by make install-osac
+  internalHostname: ""  # set dynamically by make install-osac
   variant: openshift
   images:
     service: ghcr.io/osac-project/fulfillment-service:main
@@ -137,17 +140,17 @@ aap:
   configAsCode:
     manifestSecret: "config-as-code-manifest-ig"
     secret: "config-as-code-ig"
-    # NOTE: e2e's COMPONENT_BUILD_RESULTS image-override step overrides
-    # bootstrap.image with this PR's own built image but does not touch
-    # eeImage, so the two can diverge at e2e runtime even though they're
-    # the same base value here. Extending that override to cover eeImage
-    # too is tracked separately (OSAC-3545), since it lives in
-    # osac-test-infra, not this repo.
     eeImage: "ghcr.io/osac-project/osac-aap:latest"
     projectGitUri: "https://github.com/osac-project/osac"
     projectGitBranch: "main"
   instanceGroups:
-    storageFulfillment:
+    clusterFulfillment:
+      enabled: true
+      config:
+        NETWORK_STEPS_COLLECTION: "ci.steps"
+        HOSTED_CLUSTER_CONTROLLER_AVAILABILITY_POLICY: "SingleReplica"
+        HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY: "SingleReplica"
+    networkFulfillment:
       enabled: true
 
 # --- Validation ---
@@ -156,21 +159,24 @@ validation:
 
 # --- Bare Metal Fulfillment Operator ---
 bmf:
-  enabled: false
-
-# --- CI/dev only ---
-# Hub access: registers local cluster as a hub. Only for environments
-# where the fulfillment service and hub cluster are the same.
-hubAccess:
   enabled: true
+  image:
+    repository: ghcr.io/osac-project/bare-metal-fulfillment-operator
+    tag: latest
+    pullPolicy: Always
+  env:
+    aapUrl: "http://osac-aap/api/controller"
+    aapInsecureSkipVerify: "true"
 
-# Bundled PostgreSQL: single-pod ephemeral database for testing.
-# Uses fsync=off — data is lost on restart. Not for production.
-bundledPostgres:
+# --- Cluster Versions ---
+clusterVersions:
   enabled: true
-  database:
-    name: service
-    user: service
+  versions:
+  - version: "4.20.0"
+    image: "quay.io/openshift-release-dev/ocp-release:4.20.0-multi"
+  - version: "4.22.0"
+    image: "quay.io/openshift-release-dev/ocp-release:4.22.0-multi"
+    default: true
 
 # --- Kafka (metering infrastructure) ---
 kafka:
@@ -179,8 +185,6 @@ kafka:
 # --- Metering ---
 metering:
   enabled: true
-  testAdapter:
-    enabled: true
   database:
     connection:
     - secret:
@@ -197,3 +201,18 @@ metering:
           param: sslkey
         - key: ca.crt
           param: sslrootcert
+
+# --- Hub access ---
+# Registers the local cluster as a hub. Only for environments where the
+# fulfillment service and hub cluster are the same.
+hubAccess:
+  enabled: true
+
+# --- Bundled PostgreSQL ---
+# Single-pod ephemeral database for testing. Uses fsync=off — data is lost
+# on restart. Not for production.
+bundledPostgres:
+  enabled: true
+  database:
+    name: service
+    user: service
