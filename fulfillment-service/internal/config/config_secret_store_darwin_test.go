@@ -71,7 +71,7 @@ func TestKeychainAvailable_NoDefaultKeychain(t *testing.T) {
 }
 
 func TestKeychainAvailable_RealKeychainPresent(t *testing.T) {
-	setupDefaultKeychain(t, "test-only-password")
+	keychainPath := setupDefaultKeychain(t, "test-only-password")
 
 	// This verifies the full keychainAvailable() plumbing (stage-1 default-keychain detection under sandboxed
 	// HOME, stage-2 unlock-keychain subprocess execution and exit-code interpretation) using the keychain's real
@@ -83,7 +83,22 @@ func TestKeychainAvailable_RealKeychainPresent(t *testing.T) {
 	t.Cleanup(func() { keychainProbePassword = originalKeychainProbePassword })
 
 	if !keychainAvailable() {
-		t.Error("keychainAvailable() = false, want true with a default keychain configured")
+		defaultOut, defaultErr := exec.Command(securityBinPath, "default-keychain").CombinedOutput()
+		unlockOut, unlockErr := exec.Command(
+			securityBinPath,
+			"unlock-keychain",
+			"-p",
+			keychainProbePassword,
+			keychainPath,
+		).CombinedOutput()
+		t.Errorf(
+			"keychainAvailable() = false, want true with a default keychain configured; "+
+				"default-keychain error: %v, output: %q; unlock-keychain error: %v, output: %q",
+			defaultErr,
+			defaultOut,
+			unlockErr,
+			unlockOut,
+		)
 	}
 }
 
