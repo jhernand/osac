@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2/dsl/core"
@@ -26,6 +27,10 @@ import (
 
 	"github.com/osac-project/osac/fulfillment-service/internal/collections"
 	k8sfiles "github.com/osac-project/osac/fulfillment-service/internal/kubernetes/files"
+	_ "github.com/osac-project/osac/proto/gen/osac/private/v1"
+	_ "github.com/osac-project/osac/proto/gen/osac/public/v1"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
 var _ = Describe("OPA Authorization Evaluator", func() {
@@ -508,6 +513,134 @@ var _ = Describe("OPA Authorization Evaluator", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("did not produce a subject_user"))
 			Expect(subject).To(BeNil())
+		})
+	})
+
+	Describe("reader role authorization", func() {
+		var evaluator *OPAAuthorizationEvaluator
+
+		BeforeEach(func() {
+			var err error
+			evaluator, err = NewEvaluator().
+				AddEmergencyServiceAccounts([]string{}).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("limits reader roles to reviewed reads and preserves explicit grants", func(ctx context.Context) {
+			makeUser := func(roles []any, groups []any) *AuthContext {
+				return &AuthContext{
+					Username:     "reader-test",
+					Groups:       groups,
+					AuthMethod:   "jwt",
+					Organization: []any{"acme-corp"},
+					RealmAccess:  map[string]any{"roles": roles},
+					Tenant:       "acme-corp",
+				}
+			}
+
+			clientContext := makeUser([]any{"user"}, []any{})
+			readerContexts := map[string]*AuthContext{
+				"tenant-reader":         makeUser([]any{"tenant-reader"}, []any{}),
+				"cloud-provider-reader": makeUser([]any{"cloud-provider-reader"}, []any{}),
+			}
+
+			var methods []string
+			protoregistry.GlobalFiles.RangeFiles(func(file protoreflect.FileDescriptor) bool {
+				services := file.Services()
+				for serviceIndex := 0; serviceIndex < services.Len(); serviceIndex++ {
+					service := services.Get(serviceIndex)
+					serviceName := string(service.FullName())
+					if !strings.HasPrefix(serviceName, "osac.public.v1.") &&
+						!strings.HasPrefix(serviceName, "osac.private.v1.") {
+						continue
+					}
+					for methodIndex := 0; methodIndex < service.Methods().Len(); methodIndex++ {
+						method := service.Methods().Get(methodIndex)
+						methods = append(methods, fmt.Sprintf("/%s/%s", serviceName, method.Name()))
+					}
+				}
+				return true
+			})
+			sort.Strings(methods)
+			Expect(methods).ToNot(BeEmpty())
+
+			isReviewedRead := func(method string) bool {
+				parts := strings.Split(method, "/")
+				if len(parts) != 3 || parts[0] != "" || !strings.HasPrefix(parts[1], "osac.public.v1.") {
+					return false
+				}
+				return parts[2] == "Get" || parts[2] == "List" || parts[2] == "Watch"
+			}
+
+			for _, method := range methods {
+				clientDecision, err := evaluator.Evaluate(ctx, clientContext, method)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(clientDecision).ToNot(BeNil())
+
+				expected := method == "/osac.public.v1.SelfSubjectAccessReviews/Create" ||
+					(isReviewedRead(method) && clientDecision.Allowed)
+				for role, authContext := range readerContexts {
+					decision, err := evaluator.Evaluate(ctx, authContext, method)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(decision).ToNot(BeNil())
+					Expect(decision.Allowed).To(Equal(expected),
+						fmt.Sprintf("role %q on %q (ordinary client allowed: %t)", role, method, clientDecision.Allowed))
+				}
+			}
+
+			for role, authContext := range readerContexts {
+				for _, method := range []string{
+					"/osac.public.v1.Clusters/GetByName",
+					"/osac.public.v1.Clusters/ListServices",
+					"/osac.public.v1.Events/WatchSomething",
+					"/metadata.v1.Metadata/Get",
+					"/grpc.reflection.v1.ServerReflection/ServerReflectionInfo",
+					"/grpc.health.v1.Health/Check",
+				} {
+					decision, err := evaluator.Evaluate(ctx, authContext, method)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(decision.Allowed).To(BeFalse(), "role %q on %q", role, method)
+				}
+			}
+
+			for _, authContext := range []*AuthContext{
+				readerContexts["tenant-reader"],
+				readerContexts["cloud-provider-reader"],
+				clientContext,
+				makeUser([]any{"tenant-admin"}, []any{}),
+				makeUser([]any{"tenant-reader"}, []any{"admins"}),
+			} {
+				decision, err := evaluator.Evaluate(ctx, authContext, "/osac.public.v1.SelfSubjectAccessReviews/Create")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(decision.Allowed).To(BeTrue())
+			}
+
+			for _, method := range []string{
+				"/osac.public.v1.Clusters/Create",
+				"/osac.public.v1.Clusters/Update",
+				"/osac.public.v1.Clusters/Delete",
+			} {
+				for role, authContext := range readerContexts {
+					decision, err := evaluator.Evaluate(ctx, authContext, method)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(decision.Allowed).To(BeFalse(), "role %q on %q", role, method)
+				}
+
+				mixedRole := makeUser([]any{"tenant-reader", "tenant-admin"}, []any{})
+				decision, err := evaluator.Evaluate(ctx, mixedRole, method)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(decision.Allowed).To(BeTrue(), "mixed role on %q", method)
+			}
+
+			clientCreate, err := evaluator.Evaluate(ctx, clientContext, "/osac.public.v1.Clusters/Create")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(clientCreate.Allowed).To(BeTrue())
+
+			adminReader := makeUser([]any{"tenant-reader"}, []any{"admins"})
+			adminCreate, err := evaluator.Evaluate(ctx, adminReader, "/osac.private.v1.Hubs/Create")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(adminCreate.Allowed).To(BeTrue())
 		})
 	})
 })
