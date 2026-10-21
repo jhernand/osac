@@ -174,6 +174,16 @@ is_csi if {
   role in csi_client_roles
 }
 
+# Reader restrictions apply only when no other role grants access.
+default is_reader_only = false
+is_reader_only if {
+  is_reader
+  not is_admin
+  not is_tenant_admin
+  not is_tenant_idp_manager
+  not is_csi
+}
+
 # Check if an account is a regular client (no admin, tenant management, or CSI roles):
 default is_client = false
 is_client if {
@@ -196,17 +206,17 @@ has_client_permissions if {
   is_tenant_idp_manager
 }
 
-# Allow metadata, reflection, and health to non-reader identities by default:
+# Allow metadata, reflection, and health except to reader-only users:
 allow if {
-  not is_reader
+  not is_reader_only
   startswith(grpc_method, "/metadata.")
 }
 allow if {
-  not is_reader
+  not is_reader_only
   startswith(grpc_method, "/grpc.reflection.")
 }
 allow if {
-  not is_reader
+  not is_reader_only
   startswith(grpc_method, "/grpc.health.")
 }
 

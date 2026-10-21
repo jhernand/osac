@@ -544,6 +544,7 @@ var _ = Describe("OPA Authorization Evaluator", func() {
 				"tenant-reader":         makeUser([]any{"tenant-reader"}, []any{}),
 				"cloud-provider-reader": makeUser([]any{"cloud-provider-reader"}, []any{}),
 			}
+			tenantAdminReader := makeUser([]any{"tenant-reader", "tenant-admin"}, []any{})
 
 			var methods []string
 			protoregistry.GlobalFiles.RangeFiles(func(file protoreflect.FileDescriptor) bool {
@@ -658,6 +659,31 @@ var _ = Describe("OPA Authorization Evaluator", func() {
 				}
 			}
 
+			for _, method := range []string{
+				"/metadata.v1.Metadata/Get",
+				"/grpc.reflection.v1.ServerReflection/ServerReflectionInfo",
+				"/grpc.health.v1.Health/Check",
+			} {
+				decision, err := evaluator.Evaluate(ctx, tenantAdminReader, method)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(decision).ToNot(BeNil())
+				Expect(decision.Allowed).To(BeTrue(), "mixed role on %q", method)
+			}
+
+			for role, authContext := range readerContexts {
+				for _, method := range []string{
+					"/osac.public.v1.Projects/List",
+					"/osac.public.v1.ProjectMemberships/List",
+				} {
+					decision, err := evaluator.Evaluate(ctx, authContext, method)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(decision).ToNot(BeNil())
+					Expect(decision.Allowed).To(BeTrue(), "role %q on %q", role, method)
+					Expect(decision.SubjectTenants).To(ContainElement("acme-corp"),
+						"role %q on %q", role, method)
+				}
+			}
+
 			for _, authContext := range []*AuthContext{
 				readerContexts["tenant-reader"],
 				readerContexts["cloud-provider-reader"],
@@ -681,8 +707,7 @@ var _ = Describe("OPA Authorization Evaluator", func() {
 					Expect(decision.Allowed).To(BeFalse(), "role %q on %q", role, method)
 				}
 
-				mixedRole := makeUser([]any{"tenant-reader", "tenant-admin"}, []any{})
-				decision, err := evaluator.Evaluate(ctx, mixedRole, method)
+				decision, err := evaluator.Evaluate(ctx, tenantAdminReader, method)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(decision.Allowed).To(BeTrue(), "mixed role on %q", method)
 			}
