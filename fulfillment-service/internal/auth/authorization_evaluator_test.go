@@ -565,27 +565,81 @@ var _ = Describe("OPA Authorization Evaluator", func() {
 			sort.Strings(methods)
 			Expect(methods).ToNot(BeEmpty())
 
-			isReviewedRead := func(method string) bool {
-				parts := strings.Split(method, "/")
-				if len(parts) != 3 || parts[0] != "" || !strings.HasPrefix(parts[1], "osac.public.v1.") {
-					return false
-				}
-				return parts[2] == "Get" || parts[2] == "List" || parts[2] == "Watch"
+			// Keep this set explicit so adding a client read grant cannot silently
+			// grant reader access without updating the reviewed reader contract.
+			expectedReaderMethods := map[string]struct{}{
+				"/osac.public.v1.AddOnOperators/Get":                 {},
+				"/osac.public.v1.AddOnOperators/List":                {},
+				"/osac.public.v1.BareMetalInstanceCatalogItems/Get":  {},
+				"/osac.public.v1.BareMetalInstanceCatalogItems/List": {},
+				"/osac.public.v1.BareMetalInstanceTemplates/Get":     {},
+				"/osac.public.v1.BareMetalInstanceTemplates/List":    {},
+				"/osac.public.v1.BareMetalInstanceTypes/Get":         {},
+				"/osac.public.v1.BareMetalInstanceTypes/List":        {},
+				"/osac.public.v1.BareMetalInstances/Get":             {},
+				"/osac.public.v1.BareMetalInstances/List":            {},
+				"/osac.public.v1.ClusterCatalogItems/Get":            {},
+				"/osac.public.v1.ClusterCatalogItems/List":           {},
+				"/osac.public.v1.ClusterTemplates/Get":               {},
+				"/osac.public.v1.ClusterTemplates/List":              {},
+				"/osac.public.v1.ClusterVersions/Get":                {},
+				"/osac.public.v1.ClusterVersions/List":               {},
+				"/osac.public.v1.Clusters/Get":                       {},
+				"/osac.public.v1.Clusters/List":                      {},
+				"/osac.public.v1.ComputeInstanceCatalogItems/Get":    {},
+				"/osac.public.v1.ComputeInstanceCatalogItems/List":   {},
+				"/osac.public.v1.ComputeInstanceTemplates/Get":       {},
+				"/osac.public.v1.ComputeInstanceTemplates/List":      {},
+				"/osac.public.v1.ComputeInstances/Get":               {},
+				"/osac.public.v1.ComputeInstances/List":              {},
+				"/osac.public.v1.DiskImages/Get":                     {},
+				"/osac.public.v1.DiskImages/List":                    {},
+				"/osac.public.v1.Events/Watch":                       {},
+				"/osac.public.v1.ExternalIPAttachments/Get":          {},
+				"/osac.public.v1.ExternalIPAttachments/List":         {},
+				"/osac.public.v1.ExternalIPPools/Get":                {},
+				"/osac.public.v1.ExternalIPPools/List":               {},
+				"/osac.public.v1.ExternalIPs/Get":                    {},
+				"/osac.public.v1.ExternalIPs/List":                   {},
+				"/osac.public.v1.FabricDomains/Get":                  {},
+				"/osac.public.v1.FabricDomains/List":                 {},
+				"/osac.public.v1.InstanceTypes/Get":                  {},
+				"/osac.public.v1.InstanceTypes/List":                 {},
+				"/osac.public.v1.NATGateways/Get":                    {},
+				"/osac.public.v1.NATGateways/List":                   {},
+				"/osac.public.v1.ProjectMemberships/List":            {},
+				"/osac.public.v1.Projects/List":                      {},
+				"/osac.public.v1.RoleBindings/Get":                   {},
+				"/osac.public.v1.RoleBindings/List":                  {},
+				"/osac.public.v1.Roles/Get":                          {},
+				"/osac.public.v1.Roles/List":                         {},
+				"/osac.public.v1.Secrets/Get":                        {},
+				"/osac.public.v1.Secrets/List":                       {},
+				"/osac.public.v1.SecurityGroups/Get":                 {},
+				"/osac.public.v1.SecurityGroups/List":                {},
+				"/osac.public.v1.StorageTiers/Get":                   {},
+				"/osac.public.v1.StorageTiers/List":                  {},
+				"/osac.public.v1.Subnets/Get":                        {},
+				"/osac.public.v1.Subnets/List":                       {},
+				"/osac.public.v1.VirtualNetworks/Get":                {},
+				"/osac.public.v1.VirtualNetworks/List":               {},
+				"/osac.public.v1.Volumes/Get":                        {},
+				"/osac.public.v1.Volumes/List":                       {},
+			}
+			for expectedMethod := range expectedReaderMethods {
+				Expect(methods).To(ContainElement(expectedMethod),
+					"expected reader method %q must be registered", expectedMethod)
 			}
 
 			for _, method := range methods {
-				clientDecision, err := evaluator.Evaluate(ctx, clientContext, method)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(clientDecision).ToNot(BeNil())
-
-				expected := method == "/osac.public.v1.SelfSubjectAccessReviews/Create" ||
-					(isReviewedRead(method) && clientDecision.Allowed)
+				_, isExpectedReaderMethod := expectedReaderMethods[method]
+				expected := isExpectedReaderMethod || method == "/osac.public.v1.SelfSubjectAccessReviews/Create"
 				for role, authContext := range readerContexts {
 					decision, err := evaluator.Evaluate(ctx, authContext, method)
 					Expect(err).ToNot(HaveOccurred())
 					Expect(decision).ToNot(BeNil())
 					Expect(decision.Allowed).To(Equal(expected),
-						fmt.Sprintf("role %q on %q (ordinary client allowed: %t)", role, method, clientDecision.Allowed))
+						fmt.Sprintf("role %q on %q", role, method))
 				}
 			}
 
